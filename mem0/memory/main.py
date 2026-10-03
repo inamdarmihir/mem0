@@ -1571,21 +1571,52 @@ class Memory(MemoryBase):
             return result
 
         def merge_filters(target: Dict[str, Any], source: Dict[str, Any]) -> None:
-            """Merge source into target, deep-merging nested operator dicts for the same key."""
+            """Merge source into target, deep-merging nested operator dicts for the same key.
+
+            Returns True if the merge succeeded without losing information,
+            False if an operator-key collision was detected (caller should
+            fall back to $and).
+            """
             for key, value in source.items():
                 if key in target and isinstance(target[key], dict) and isinstance(value, dict):
+                    # Check for operator-key collisions before merging
+                    if set(target[key].keys()) & set(value.keys()):
+                        return False
                     target[key].update(value)
+                elif key in target:
+                    # Same key, scalar vs scalar or type mismatch — collision
+                    return False
                 else:
                     target[key] = value
+            return True
 
         for key, value in metadata_filters.items():
             if key == "AND":
-                # Logical AND: combine multiple conditions
+                # Logical AND: combine multiple conditions.
+                # Merge compatible conditions into the flat dict; when a
+                # field+operator collision is detected, preserve every
+                # sub-condition as a separate $and entry so no operator is
+                # lost (fixes issue #7468).
                 if not isinstance(value, list):
                     raise ValueError("AND operator requires a list of conditions")
+                and_items: list = []
                 for condition in value:
+                    processed = {}
                     for sub_key, sub_value in condition.items():
-                        merge_filters(processed_filters, process_condition(sub_key, sub_value))
+                        merge_filters(processed, process_condition(sub_key, sub_value))
+                    and_items.append(processed)
+                # Try to merge all items into processed_filters without collision
+                merged_ok = True
+                trial = dict(processed_filters)
+                for item in and_items:
+                    if not merge_filters(trial, item):
+                        merged_ok = False
+                        break
+                if merged_ok:
+                    processed_filters.update(trial)
+                else:
+                    # Collision detected — keep each sub-condition separate
+                    processed_filters.setdefault("$and", []).extend(and_items)
             elif key == "OR":
                 # Logical OR: Pass through to vector store for implementation-specific handling
                 if not isinstance(value, list) or not value:
@@ -3259,21 +3290,52 @@ class AsyncMemory(MemoryBase):
             return result
 
         def merge_filters(target: Dict[str, Any], source: Dict[str, Any]) -> None:
-            """Merge source into target, deep-merging nested operator dicts for the same key."""
+            """Merge source into target, deep-merging nested operator dicts for the same key.
+
+            Returns True if the merge succeeded without losing information,
+            False if an operator-key collision was detected (caller should
+            fall back to $and).
+            """
             for key, value in source.items():
                 if key in target and isinstance(target[key], dict) and isinstance(value, dict):
+                    # Check for operator-key collisions before merging
+                    if set(target[key].keys()) & set(value.keys()):
+                        return False
                     target[key].update(value)
+                elif key in target:
+                    # Same key, scalar vs scalar or type mismatch — collision
+                    return False
                 else:
                     target[key] = value
+            return True
 
         for key, value in metadata_filters.items():
             if key == "AND":
-                # Logical AND: combine multiple conditions
+                # Logical AND: combine multiple conditions.
+                # Merge compatible conditions into the flat dict; when a
+                # field+operator collision is detected, preserve every
+                # sub-condition as a separate $and entry so no operator is
+                # lost (fixes issue #7468).
                 if not isinstance(value, list):
                     raise ValueError("AND operator requires a list of conditions")
+                and_items: list = []
                 for condition in value:
+                    processed = {}
                     for sub_key, sub_value in condition.items():
-                        merge_filters(processed_filters, process_condition(sub_key, sub_value))
+                        merge_filters(processed, process_condition(sub_key, sub_value))
+                    and_items.append(processed)
+                # Try to merge all items into processed_filters without collision
+                merged_ok = True
+                trial = dict(processed_filters)
+                for item in and_items:
+                    if not merge_filters(trial, item):
+                        merged_ok = False
+                        break
+                if merged_ok:
+                    processed_filters.update(trial)
+                else:
+                    # Collision detected — keep each sub-condition separate
+                    processed_filters.setdefault("$and", []).extend(and_items)
             elif key == "OR":
                 # Logical OR: Pass through to vector store for implementation-specific handling
                 if not isinstance(value, list) or not value:

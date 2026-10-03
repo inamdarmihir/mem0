@@ -399,9 +399,26 @@ class Qdrant(VectorStoreBase):
                     if built:
                         must_not.append(built)
             else:
-                condition = self._build_field_condition(key, value)
-                if condition is not None:
-                    must.append(condition)
+                if isinstance(value, dict) and len(value) > 1:
+                    # Multi-operator dict on a single field: split into
+                    # separate FieldConditions so each operator is applied.
+                    # Group range operators together (they map to one Range);
+                    # every other operator becomes its own condition.
+                    range_ops = {"gt", "gte", "lt", "lte"}
+                    range_part = {op: v for op, v in value.items() if op in range_ops}
+                    other_parts = {op: v for op, v in value.items() if op not in range_ops}
+                    if range_part:
+                        condition = self._build_field_condition(key, range_part)
+                        if condition is not None:
+                            must.append(condition)
+                    for op, v in other_parts.items():
+                        condition = self._build_field_condition(key, {op: v})
+                        if condition is not None:
+                            must.append(condition)
+                else:
+                    condition = self._build_field_condition(key, value)
+                    if condition is not None:
+                        must.append(condition)
 
         if not any([must, should, must_not]):
             return None

@@ -1065,3 +1065,67 @@ class TestQdrantDatetimeRangeFilters(unittest.TestCase):
         self.assertIn("mem0ai[extras]", joined)  # points at the right install
         self.assertNotIn("pip install fastembed", joined)  # not the bare package
         self.assertNotIn("\u2014", joined)  # no em-dash
+
+
+class TestQdrantMultiOperatorSameField(unittest.TestCase):
+    """Regression tests for issue #7468: multiple operators on the same field."""
+
+    def setUp(self):
+        self.client_mock = MagicMock(spec=QdrantClient)
+        self.qdrant = Qdrant(
+            collection_name="test_collection",
+            embedding_model_dims=128,
+            client=self.client_mock,
+        )
+
+    def test_ne_and_nin_via_create_filter(self):
+        """ne + nin on one field must produce two separate FieldConditions."""
+        result = self.qdrant._create_filter({"status": {"ne": "archived", "nin": ["deleted"]}})
+        self.assertIsNotNone(result)
+        # Two conditions in must: one MatchExcept for ne, one MatchExcept for nin
+        self.assertEqual(len(result.must), 2)
+        match_types = {type(c.match) for c in result.must}
+        self.assertEqual(match_types, {MatchExcept})
+
+    def test_ne_and_nin_via_and_list(self):
+        """AND list with ne + nin on one field via $and must produce separate conditions."""
+        result = self.qdrant._create_filter({
+            "$and": [
+                {"status": {"ne": "archived"}},
+                {"status": {"nin": ["deleted"]}},
+            ]
+        })
+        self.assertIsNotNone(result)
+        # Each AND sub-condition becomes a Filter in must
+        self.assertEqual(len(result.must), 2)
+
+    def test_range_and_ne_via_create_filter(self):
+        """Range + ne on one field must produce two FieldConditions, not raise."""
+        result = self.qdrant._create_filter({"priority": {"gte": 1, "ne": 5}})
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result.must), 2)
+        types = set()
+        for c in result.must:
+            if c.range is not None:
+                types.add("range")
+            if c.match is not None:
+                types.add("match")
+        self.assertEqual(types, {"range", "match"})
+
+    def test_range_and_ne_via_and_list(self):
+        """AND list with range + ne on one field must both apply."""
+        result = self.qdrant._create_filter({
+            "$and": [
+                {"priority": {"gte": 1}},
+                {"priority": {"ne": 5}},
+            ]
+        })
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result.must), 2)
+
+    def test_single_operator_unchanged(self):
+        """Single operator on a field still produces one FieldCondition."""
+        result = self.qdrant._create_filter({"status": {"ne": "archived"}})
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result.must), 1)
+        self.assertIsInstance(result.must[0], FieldCondition)

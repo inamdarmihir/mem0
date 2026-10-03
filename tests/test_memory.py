@@ -1073,12 +1073,38 @@ class TestProcessMetadataFiltersMerge:
         assert result == {"price": {"gt": 10, "lt": 20}, "category": "electronics"}
 
     def test_and_simple_equality_no_merge(self, mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
-        """AND with simple equality values on the same key — last value wins."""
+        """AND with simple equality values on the same key — preserved via $and (issue #7468)."""
         memory = self._make_memory(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory)
         result = memory._process_metadata_filters({
             "AND": [{"status": "active"}, {"status": "pending"}]
         })
-        assert result == {"status": "pending"}
+        assert result == {"$and": [{"status": "active"}, {"status": "pending"}]}
+
+    def test_and_ne_and_nin_on_same_field_preserved(self, mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
+        """AND with ne + nin on same field must preserve both operators (issue #7468)."""
+        memory = self._make_memory(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory)
+        result = memory._process_metadata_filters({
+            "AND": [{"status": {"ne": "archived"}}, {"status": {"nin": ["deleted"]}}]
+        })
+        # ne and nin are different operator keys — merge succeeds
+        assert result == {"status": {"ne": "archived", "nin": ["deleted"]}}
+
+    def test_and_duplicate_ne_on_same_field_uses_and(self, mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
+        """AND with two ne operators on same field must use $and (issue #7468)."""
+        memory = self._make_memory(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory)
+        result = memory._process_metadata_filters({
+            "AND": [{"status": {"ne": "archived"}}, {"status": {"ne": "deleted"}}]
+        })
+        assert result == {"$and": [{"status": {"ne": "archived"}}, {"status": {"ne": "deleted"}}]}
+
+    def test_and_range_plus_ne_on_same_field(self, mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
+        """AND with range + ne on same field must preserve both (issue #7468)."""
+        memory = self._make_memory(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory)
+        result = memory._process_metadata_filters({
+            "AND": [{"priority": {"gte": 1}}, {"priority": {"ne": 5}}]
+        })
+        # gte and ne are different operator keys — merge succeeds
+        assert result == {"priority": {"gte": 1, "ne": 5}}
 
 
 # --- Issue #3040: reset() should clean up graph database ---
