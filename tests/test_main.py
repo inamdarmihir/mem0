@@ -376,6 +376,41 @@ def test_only_user_vector_store_is_created(memory_cls):
         assert created_config.collection_name == "prod"
 
 
+@pytest.mark.parametrize("memory_cls", [Memory, AsyncMemory])
+def test_two_local_qdrant_instances_do_not_share_hidden_storage(memory_cls, tmp_path):
+    """Two instances on different local Qdrant paths must not contend for a shared path under the mem0 directory."""
+    from qdrant_client import QdrantClient
+
+    def build(name):
+        return MemoryConfig(
+            version="v1.1",
+            vector_store={
+                "provider": "qdrant",
+                "config": {"path": str(tmp_path / name), "collection_name": name, "embedding_model_dims": 8},
+            },
+        )
+
+    with (
+        patch("mem0.utils.factory.EmbedderFactory") as mock_embedder,
+        patch("mem0.utils.factory.LlmFactory") as mock_llm,
+        patch("mem0.memory.telemetry.capture_event"),
+    ):
+        mock_embedder.create.return_value = Mock()
+        mock_llm.create.return_value = Mock()
+
+        first = memory_cls(build("first"))
+        second = memory_cls(build("second"))
+
+        # Each instance owns exactly its own collection; no extra collection is created next to it.
+        assert [c.name for c in first.vector_store.client.get_collections().collections] == ["first"]
+        assert [c.name for c in second.vector_store.client.get_collections().collections] == ["second"]
+
+        for memory in (first, second):
+            client = memory.vector_store.client
+            assert isinstance(client, QdrantClient)
+            client.close()
+
+
 # =============================================================================
 # Input Validation Tests
 # =============================================================================
